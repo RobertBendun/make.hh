@@ -490,6 +490,53 @@ namespace make
 			return {};
 		}
 	}
+
+	// Struct holding some of implicit variables that GNU make uses (relevant ones), with convinent factory function that loads from enviroment.
+	// Uses the same defaults as GNU make. Supporting this functionality may seem counter-productive (why reimplement Make?) but already existing
+	// infrastructure using this convention and we don't want to make hard things (like building) harder.
+	// See: https://www.gnu.org/software/make/manual/html_node/Implicit-Variables.html
+	struct gnu_implicit_variables
+	{
+		// C compiler
+		std::vector<std::string> cc{ "cc"  };
+
+		// C compiler flags
+		std::vector<std::string> cflags{};
+
+		// C++ compiler
+		std::vector<std::string> cxx{ "g++" };
+
+		// C++ compiler flags
+		std::vector<std::string> cxxflags{};
+
+		// Preprocesor flags
+		std::vector<std::string> cppflags{};
+
+		// Linker flags
+		std::vector<std::string> ldflags{};
+
+		// Libraries to link with
+		std::vector<std::string> ldlibs{};
+
+		void fill_with_env()
+		{
+			if (auto env = flags_from_env("CC");       env.size()) cc       = env;
+			if (auto env = flags_from_env("CXX");      env.size()) cxx      = env;
+
+			if (auto env = flags_from_env("CFLAGS");   env.size()) append(cflags, env);
+			if (auto env = flags_from_env("CXXFLAGS"); env.size()) append(cxxflags, env);
+			if (auto env = flags_from_env("CPPFLAGS"); env.size()) append(cppflags, env);
+			if (auto env = flags_from_env("LDFLAGS");  env.size()) append(ldflags, env);
+			if (auto env = flags_from_env("LDLIBS");   env.size()) append(ldlibs, env);
+		}
+
+		static gnu_implicit_variables load_from_env()
+		{
+			gnu_implicit_variables impl{};
+			impl.fill_with_env();
+			return impl;
+		}
+	};
 }
 
 int main(int argc, char **argv)
@@ -498,9 +545,24 @@ int main(int argc, char **argv)
 
 	make::rebuild_self(argc, argv);
 
-	auto cxx = make::or_default(make::flags_from_env("CXX"), make::compiler::gcc);
-	auto cxxflags = std::vector { "-Wall"s, "-Wextra"s, };
-	make::append(cxxflags, make::flags_from_env("CXXFLAGS"));
+	/* Manual parameter loading from enviroment variables */ {
+		auto cxx = make::or_default(make::flags_from_env("CXX"), make::compiler::gcc);
+		auto cxxflags = std::vector { "-Wall"s, "-Wextra"s, };
+		make::append(cxxflags, make::flags_from_env("CXXFLAGS"));
 
-	make::Cmd{"echo", cxx, cxxflags, "-o", "main", "main.cc"}.run_and_check();
+		make::Cmd{"echo", cxx, cxxflags, "-o", "main", "main.cc"}.run_and_check();
+	}
+
+	/* Replicate make behaviour */ {
+		auto i = make::gnu_implicit_variables::load_from_env();
+		make::append(i.cxxflags, "-Wall", "-Wextra");
+		make::Cmd{"echo", i.cxx, i.cxxflags, "-o", "main", "main.cc"}.run_and_check();
+	}
+
+	/* Replicate make behaviour but assume c++ as default compiler */ {
+		make::gnu_implicit_variables i{};
+		i.cxx = { "c++" };
+		i.fill_with_env();
+		make::append(i.cxxflags, "-Wall", "-Wextra");
+	}
 }

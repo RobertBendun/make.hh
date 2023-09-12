@@ -23,8 +23,13 @@ If something gone wrong, you can access previous version by `./make.old`
 
 - [x] Self rebuild when build script changes
 - [x] Automatic dependency resolution from C++ sources
+- [x] Support for [GNU Make implicit variables](https://www.gnu.org/software/make/manual/html_node/Implicit-Variables.html)
+- [ ] Compiler/Interpreter version testing (C, C++, Python)
+- [ ] Support for pkg-config
 - [ ] Automatic compile database generation from builds
 - [ ] Parallel builds
+- [ ] Multiplatform
+- [ ] Version control information from GIT (latest tag, current commit)
 
 ## Inspiration
 
