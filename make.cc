@@ -11,6 +11,7 @@
 #include <source_location>
 #include <vector>
 #include <string.h>
+#include <errno.h>
 
 #include <sys/wait.h>
 
@@ -299,17 +300,8 @@ namespace make
 
 	struct Status
 	{
-		enum
-		{
-			EXIT,
-			SIGNAL,
-		} kind = EXIT;
-
-		union
-		{
-			int exit_code;
-			int signal;
-		};
+		enum { EXIT, SIGNAL } kind = EXIT;
+		union { int exit_code, signal; };
 
 		constexpr operator bool() const { return kind == EXIT && exit_code == 0; }
 
@@ -328,8 +320,9 @@ namespace make
 		for (;;) {
 			int wstatus = 0;
 
-			auto result = ::waitpid(pid, &wstatus, 0);
-			assert(result >= 0);
+			if (::waitpid(pid, &wstatus, 0) < 0) {
+				panic(std::string("Failed to wait for process: ") + strerror(errno));
+			}
 
 			if (WIFEXITED(wstatus)) {
 				return Status { .exit_code = WEXITSTATUS(wstatus) };
@@ -344,22 +337,23 @@ namespace make
 	[[nodiscard]]
 	Status cmd_run(std::vector<std::string> &argv)
 	{
-		panic_if(argv.empty(), "couldn't empty command");
+		panic_if(argv.empty(), "couldn't execute empty command");
 		std::cout << "[CMD] " << cmd_render(argv) << std::endl;
 
 		auto child_pid = ::fork();
-		assert(child_pid >= 0); // TODO(assert)
+		if (child_pid < 0) {
+			panic(std::string("Failed to execute command: ") + strerror(errno));
+		}
 
 		if (child_pid == 0) {
 			auto c_argv = std::make_unique<char*[]>(argv.size() + 1);
 			std::transform(argv.begin(), argv.end(), c_argv.get(), [](std::string &s) { return s.data(); });
-			auto result = ::execvp(c_argv[0], c_argv.get());
-			assert(result >= 0);
+			::execvp(c_argv[0], c_argv.get());
+			panic(std::string("Failed to execute command: ") + strerror(errno));
 		}
 
 		return pid_wait(child_pid);
 	}
-
 
 	struct Cmd
 	{
