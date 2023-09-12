@@ -271,12 +271,52 @@ namespace make
 				vec.emplace_back(data);
 			}
 		}
+
+		template<typename T, std::ranges::forward_range R>
+		requires (!std::is_array_v<R> and std::constructible_from<T, std::ranges::range_value_t<R>>)
+		void append(std::vector<T> &vec, R&& range)
+		{
+			if constexpr (std::ranges::sized_range<R>) {
+				vec.reserve(vec.size() + std::size(vec));
+			}
+			for (auto&& element : range) {
+				// TODO: Use forward_like
+				vec.emplace_back(element);
+			}
+		}
 	}
 
 	template<typename T, typename ...Xs>
 	void append(std::vector<T> &vector, Xs&& ...either_value_or_range)
 	{
 		(details::append(vector, either_value_or_range), ...);
+	}
+
+	std::vector<std::string> cmd_parse(std::string_view command)
+	{
+		std::vector<std::string> args;
+
+		char previous = '\0';
+		auto start = 0u;
+		for (auto i = 0u; i < command.size(); ++i) {
+			switch (command[i]) {
+			break; case '\'': case '"':
+				assert(false && "unimplemented");
+
+			break; case ' ':
+				if (previous != ' ') {
+					args.emplace_back(command.substr(start, i - start));
+				}
+				start = i + 1;
+			}
+			previous = command[i];
+		}
+
+		if (start < command.size()) {
+			args.emplace_back(command.substr(start));
+		}
+
+		return args;
 	}
 
 	std::string cmd_render(std::vector<std::string> const& argv)
@@ -433,10 +473,19 @@ namespace make
 		auto status = make::cmd_run(run.argv);
 		::exit(status.normalize_to_exit_code());
 	}
+
+	std::vector<std::string> flags_from_env(std::string environment_variable) {
+		if ([[maybe_unused]] auto env = ::getenv(environment_variable.c_str())) {
+			return cmd_parse(env);
+		} else {
+			return {};
+		}
+	}
 }
 
 int main(int argc, char **argv)
 {
 	make::rebuild_self(argc, argv);
-	make::Cmd{"false"}.run_and_check();
+
+	make::Cmd{"echo", make::flags_from_env("TEXT")}.run_and_check();
 }
