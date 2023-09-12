@@ -10,8 +10,25 @@
 #include <set>
 #include <source_location>
 #include <vector>
+#include <string.h>
 
 #include <sys/wait.h>
+
+namespace make
+{
+	[[noreturn]]
+	inline void panic(std::string why, std::source_location where = std::source_location::current())
+	{
+		std::cerr << "[ERROR] at " << where.file_name() << ':' << where.line() << ':' << where.column() << ": " << why << std::endl;
+		std::abort();
+	}
+
+	inline void panic_if(bool should, std::string why, std::source_location where = std::source_location::current())
+	{
+		if (!should) return;
+		panic(std::move(why), where);
+	}
+}
 
 namespace make
 {
@@ -261,37 +278,52 @@ namespace make
 		(details::append(vector, either_value_or_range), ...);
 	}
 
-	struct Cmd
+	std::string cmd_render(std::vector<std::string> const& argv)
 	{
-		std::vector<std::string> argv{};
-		std::string input_stream;
+		std::string cmd;
+		for (auto it = argv.begin(); it != argv.end(); ++it) {
+			if (it != argv.begin()) cmd += ' ';
 
-		constexpr Cmd() = default;
-
-		template<details::value_or_range<std::string> ...T>
-		explicit Cmd(T&& ...args)
-		{
-			append(argv, std::forward<T>(args)...);
+			if (it->find_first_of(" \"") != std::string::npos) {
+				cmd += '\'';
+				cmd += *it;
+				cmd += '\'';
+			} else if (it->find('\'') != std::string::npos) {
+				assert(0 && "unimplemented");
+			} else {
+				cmd += *it;
+			}
 		}
+		return cmd;
+	}
 
-		// TODO: Something like shlex quote
-		friend std::ostream& operator<<(std::ostream& os, Cmd cmd)
+	struct Status
+	{
+		enum
 		{
-			os << "Cmd{";
+			EXIT,
+			SIGNAL,
+		} kind = EXIT;
 
-			for (auto it = cmd.argv.begin(); std::next(it) != cmd.argv.end(); ++it) {
-				os << std::quoted(*it) << ", ";
+		union
+		{
+			int exit_code;
+			int signal;
+		};
+
+		constexpr operator bool() const { return kind == EXIT && exit_code == 0; }
+
+		constexpr int normalize_to_exit_code() const {
+			switch (kind) {
+			case EXIT: return exit_code;
+			case SIGNAL: return 128 + exit_code;
 			}
-
-			if (cmd.argv.size()) {
-				os << std::quoted(cmd.argv.back());
-			}
-
-			return os << "}";
+			assert(0 && "unreachable");
 		}
 	};
 
-	int pid_wait(pid_t pid)
+	[[nodiscard]]
+	Status pid_wait(pid_t pid)
 	{
 		for (;;) {
 			int wstatus = 0;
@@ -300,29 +332,20 @@ namespace make
 			assert(result >= 0);
 
 			if (WIFEXITED(wstatus)) {
-				return WEXITSTATUS(wstatus);
+				return Status { .exit_code = WEXITSTATUS(wstatus) };
 			}
 
-			assert(not WIFSIGNALED(wstatus)); // TODO(assert)
+			if (WIFSIGNALED(wstatus)) {
+				return Status { .kind = Status::SIGNAL, .exit_code = WTERMSIG(wstatus) };
+			}
 		}
 	}
 
-	// TODO: proper shell quote (like shlex)
-	std::string quote(std::string s)
+	[[nodiscard]]
+	Status cmd_run(std::vector<std::string> &argv)
 	{
-		return s;
-	}
-
-	void cmd_run(std::vector<std::string> &argv)
-	{
-		assert(argv.size());
-
-		std::cout << "[CMD] ";
-		for (auto it = argv.begin(); it != argv.end(); ++it) {
-			std::cout << quote(*it);
-			if (it != argv.end()) std::cout << ' ';
-		}
-		std::cout << std::endl;
+		panic_if(argv.empty(), "couldn't empty command");
+		std::cout << "[CMD] " << cmd_render(argv) << std::endl;
 
 		auto child_pid = ::fork();
 		assert(child_pid >= 0); // TODO(assert)
@@ -334,8 +357,36 @@ namespace make
 			assert(result >= 0);
 		}
 
-		pid_wait(child_pid);
+		return pid_wait(child_pid);
 	}
+
+
+	struct Cmd
+	{
+		std::vector<std::string> argv{};
+
+		constexpr Cmd() = default;
+
+		template<details::value_or_range<std::string> ...T>
+		explicit Cmd(T&& ...args)
+		{
+			append(argv, std::forward<T>(args)...);
+		}
+
+		// run command and ensure that we returned success
+		void run_and_check(std::source_location where = std::source_location::current())
+		{
+			auto result = cmd_run(argv);
+			if (not result) {
+				switch (result.kind) {
+				break; case Status::EXIT:
+					panic("Command " + cmd_render(argv) + " returned non-zero exit code (exit_code = " + std::to_string(result.exit_code) + ")", where);
+				break; case Status::SIGNAL:
+					panic("Command " + cmd_render(argv) + " stopped with a signal: " + strsignal(result.signal), where);
+				}
+			}
+		}
+	};
 
 	void append(Cmd &cmd, auto&& ...args)
 		requires requires { {append(cmd.argv, std::forward<decltype(args)>(args)...)}; }
@@ -378,19 +429,20 @@ namespace make
 		{
 			std::filesystem::path old_program = program_path;
 			old_program += ".old";
-			std::filesystem::copy_file(program_path,  old_program);
+			std::filesystem::copy_file(program_path, old_program, std::filesystem::copy_options::overwrite_existing);
 		}
 
-		Cmd cmd1{make::compiler::current(), "-std=c++20", "-o", program_path, source_path};
-		make::cmd_run(cmd1.argv);
+		Cmd compile{make::compiler::current(), "-std=c++20", "-o", program_path, source_path};
+		compile.run_and_check();
 
-		Cmd cmd2{program_path};
-		make::cmd_run(cmd2.argv);
-		::exit(0);
+		Cmd run{program_path};
+		auto status = make::cmd_run(run.argv);
+		::exit(status.normalize_to_exit_code());
 	}
 }
 
 int main(int argc, char **argv)
 {
 	make::rebuild_self(argc, argv);
+	make::Cmd{"false"}.run_and_check();
 }
