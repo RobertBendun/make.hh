@@ -1,12 +1,17 @@
+#include <algorithm>
 #include <cassert>
 #include <compare>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <ranges>
 #include <set>
+#include <source_location>
 #include <vector>
+
+#include <sys/wait.h>
 
 namespace make
 {
@@ -187,7 +192,7 @@ next_line:
 	}
 }
 
-int main()
+void demo_includes_resolution()
 {
 	auto results = make::includes_in_directory("../musique/musique/", make::extensions::cpp);
 
@@ -205,4 +210,181 @@ int main()
 			std::cout << '\n';
 		}
 	}
+}
+
+namespace make
+{
+	namespace details
+	{
+		template<typename T>
+		concept printable = requires (std::ostream &os, T const& val)
+		{
+			{ os << val } -> std::same_as<std::ostream&>;
+		};
+	}
+
+	namespace details
+	{
+		template<typename T, typename Desired>
+		concept value_or_range = std::constructible_from<Desired, T>
+			|| (std::ranges::forward_range<T> && std::constructible_from<Desired, std::ranges::range_value_t<T>>);
+
+		// Ensure that the following types work
+		static_assert(value_or_range<char const*, std::string>);
+		static_assert(value_or_range<std::string_view, std::string>);
+		static_assert(value_or_range<std::string, std::string>);
+		static_assert(value_or_range<std::vector<char const*>, std::string>);
+		static_assert(value_or_range<std::vector<std::string_view>, std::string>);
+		static_assert(value_or_range<std::vector<std::string>, std::string>);
+
+		template<typename T, typename U>
+		requires std::constructible_from<T, U>
+		void append(std::vector<T> &vec, U &&element)
+		{
+			vec.emplace_back(std::forward<decltype(element)>(element));
+		}
+
+		template<typename T, typename U, std::size_t N>
+		requires std::convertible_to<T, U>
+		void append(std::vector<T> &vec, U(&array)[N])
+		{
+			vec.reserve(vec.size() + N);
+			for (auto const& data : array) {
+				vec.emplace_back(data);
+			}
+		}
+	}
+
+	template<typename T, typename ...Xs>
+	void append(std::vector<T> &vector, Xs&& ...either_value_or_range)
+	{
+		(details::append(vector, either_value_or_range), ...);
+	}
+
+	struct Cmd
+	{
+		std::vector<std::string> argv{};
+		std::string input_stream;
+
+		constexpr Cmd() = default;
+
+		template<details::value_or_range<std::string> ...T>
+		explicit Cmd(T&& ...args)
+		{
+			append(argv, std::forward<T>(args)...);
+		}
+
+		// TODO: Something like shlex quote
+		friend std::ostream& operator<<(std::ostream& os, Cmd cmd)
+		{
+			os << "Cmd{";
+
+			for (auto it = cmd.argv.begin(); std::next(it) != cmd.argv.end(); ++it) {
+				os << std::quoted(*it) << ", ";
+			}
+
+			if (cmd.argv.size()) {
+				os << std::quoted(cmd.argv.back());
+			}
+
+			return os << "}";
+		}
+	};
+
+	int pid_wait(pid_t pid)
+	{
+		for (;;) {
+			int wstatus = 0;
+
+			auto result = ::waitpid(pid, &wstatus, 0);
+			assert(result >= 0);
+
+			if (WIFEXITED(wstatus)) {
+				return WEXITSTATUS(wstatus);
+			}
+
+			assert(not WIFSIGNALED(wstatus)); // TODO(assert)
+		}
+	}
+
+	// TODO: proper shell quote (like shlex)
+	std::string quote(std::string s)
+	{
+		return s;
+	}
+
+	void cmd_run(std::vector<std::string> &argv)
+	{
+		assert(argv.size());
+
+		std::cout << "[CMD] ";
+		for (auto it = argv.begin(); it != argv.end(); ++it) {
+			std::cout << quote(*it);
+			if (it != argv.end()) std::cout << ' ';
+		}
+		std::cout << std::endl;
+
+		auto child_pid = ::fork();
+		assert(child_pid >= 0); // TODO(assert)
+
+		if (child_pid == 0) {
+			auto c_argv = std::make_unique<char*[]>(argv.size() + 1);
+			std::transform(argv.begin(), argv.end(), c_argv.get(), [](std::string &s) { return s.data(); });
+			auto result = ::execvp(c_argv[0], c_argv.get());
+			assert(result >= 0);
+		}
+
+		pid_wait(child_pid);
+	}
+
+	void append(Cmd &cmd, auto&& ...args)
+		requires requires { {append(cmd.argv, std::forward<decltype(args)>(args)...)}; }
+	{
+		append(cmd.argv, std::forward<decltype(args)>(args)...);
+	}
+
+	namespace compiler
+	{
+		inline namespace cpp
+		{
+			[[maybe_unused]] constexpr std::string_view gcc = "g++";
+			[[maybe_unused]] constexpr std::string_view clang = "clang++";
+			[[maybe_unused]] constexpr std::string_view posix = "c++";
+
+			constexpr std::string_view current()
+			{
+#if defined(__clang__)
+				return clang;
+#elif defined(__GNUC__)
+				return gcc;
+#else
+#error Unknown compiler
+#endif
+			}
+		}
+	}
+
+	void rebuild_self(int argc, char **argv, std::source_location use_location = std::source_location::current())
+	{
+		assert(argc > 0);
+		// TODO: is this the best way to do this? Maybe some /proc/self would be better
+		char const *program_path = argv[0];
+		char const *source_path = use_location.file_name();
+
+		if (std::filesystem::last_write_time(program_path) >= std::filesystem::last_write_time(source_path)) {
+			return;
+		}
+
+		Cmd cmd1{make::compiler::current(), "-std=c++20", "-o", program_path, source_path};
+		make::cmd_run(cmd1.argv);
+
+		Cmd cmd2{program_path};
+		make::cmd_run(cmd2.argv);
+		::exit(0);
+	}
+}
+
+int main(int argc, char **argv)
+{
+	make::rebuild_self(argc, argv);
 }
