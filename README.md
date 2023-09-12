@@ -17,6 +17,7 @@ $ ./make
 ```
 
 Each of invocations may rebuild `./make` if `make.cc` has changed.
+If something gone wrong, you can access previous version by `./make.old`
 
 ## Planned features
 

@@ -369,10 +369,16 @@ namespace make
 		assert(argc > 0);
 		// TODO: is this the best way to do this? Maybe some /proc/self would be better
 		char const *program_path = argv[0];
-		char const *source_path = use_location.file_name();
+		char const *source_path  = use_location.file_name();
 
 		if (std::filesystem::last_write_time(program_path) >= std::filesystem::last_write_time(source_path)) {
 			return;
+		}
+
+		{
+			std::filesystem::path old_program = program_path;
+			old_program += ".old";
+			std::filesystem::copy_file(program_path,  old_program);
 		}
 
 		Cmd cmd1{make::compiler::current(), "-std=c++20", "-o", program_path, source_path};
