@@ -286,10 +286,19 @@ namespace make
 		}
 	}
 
-	template<typename T, typename ...Xs>
+	template<typename T, details::value_or_range<T> ...Xs>
 	void append(std::vector<T> &vector, Xs&& ...either_value_or_range)
 	{
 		(details::append(vector, either_value_or_range), ...);
+	}
+
+	template<typename T, details::value_or_range<T> ...Xs>
+	std::vector<T> or_default(std::vector<T> &&vector, Xs&& ...either_value_or_range)
+	{
+		if (vector.empty()) {
+			append(vector, std::forward<Xs>(either_value_or_range)...);
+		}
+		return vector;
 	}
 
 	std::vector<std::string> cmd_parse(std::string_view command)
@@ -304,7 +313,7 @@ namespace make
 				assert(false && "unimplemented");
 
 			break; case ' ':
-				if (previous != ' ') {
+				if (previous != ' ' and i != 0u) {
 					args.emplace_back(command.substr(start, i - start));
 				}
 				start = i + 1;
@@ -312,7 +321,7 @@ namespace make
 			previous = command[i];
 		}
 
-		if (start < command.size()) {
+		if (start < command.size() && command[start] != ' ') {
 			args.emplace_back(command.substr(start));
 		}
 
@@ -485,7 +494,13 @@ namespace make
 
 int main(int argc, char **argv)
 {
+	using namespace std::string_literals;
+
 	make::rebuild_self(argc, argv);
 
-	make::Cmd{"echo", make::flags_from_env("TEXT")}.run_and_check();
+	auto cxx = make::or_default(make::flags_from_env("CXX"), make::compiler::gcc);
+	auto cxxflags = std::vector { "-Wall"s, "-Wextra"s, };
+	make::append(cxxflags, make::flags_from_env("CXXFLAGS"));
+
+	make::Cmd{"echo", cxx, cxxflags, "-o", "main", "main.cc"}.run_and_check();
 }
